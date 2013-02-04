@@ -9,11 +9,15 @@ var       fs = require( 'fs' )
   ,    charm = require( 'charm' )( process )
   ,   colors = require( 'colors/colors' )
 
-  ,     exts = '3g2,3gp,aepx,ale,asf,asx,avi,avp,avs,bdm,bik,bsf,camproj,cpi,divx,dmsm,dream,dvdmedia,dvr-ms,dzm,dzp,edl,f4v,fbr,fcproject,flv,hdmov,imovieproj,m2p,m2ts,m4v,mkv,mod,moi,mov,mp4,mpeg,mpg,mts,mxf,ogv,pds,prproj,psh,r3d,rcproject,rm,rmvb,scm,smil,sqz,srt,stx,swf,swi,tix,trp,ts,veg,vf,vob,vro,webm,wlmp,wmv,wtv,xvid,yuv'
+  ,     exts = '3g2,3gp,aepx,ale,asf,asx,avi,avp,avs,bdm,bik,bsf,camproj,cpi,divx,dmsm,dream,dvdmedia,dvr-ms,dzm,dzp,edl,f4v,fbr,fcproject,flv,hdmov,imovieproj,m2p,m2ts,mkv,mod,moi,mov,mpeg,mpg,mts,mxf,ogv,pds,prproj,psh,r3d,rcproject,rm,rmvb,scm,smil,sqz,srt,stx,swf,swi,tix,trp,ts,veg,vf,vob,vro,webm,wlmp,wmv,wtv,xvid,yuv'
   , toEncode = []
   ,    chrOk = String.fromCharCode( 10003 )
   ,  chrFail = String.fromCharCode( 10007 )
   , folder, progressBar, extRx, activeEncoder;
+
+toEncode.size    = 0;
+toEncode.encoded = 0;
+toEncode.sizes   = [];
 
 /**
  * Allow app to exit!
@@ -55,10 +59,10 @@ process.nextTick( function(){
 
 	if( !path.existsSync( program.handbrake ) ){ die( 'HandBrakeCLI not found' ); }
 
-	extRx = new RegExp( '\\.(' + 
+	extRx = new RegExp( '\\.(' +
 		( program.extensions || exts )
-			.replace( /,/g, '|' )
-		 + ')$' );
+			.replace( /,/ig, '|' )
+		 + ')$', 'i' );
 
 	if( program.outputfolder ){
 		program.outputfolder = resolve( program.outputfolder );
@@ -95,14 +99,14 @@ process.on( 'exit', function(){
 function die( msg ){
 	msg && console.error( msg.red );
 	process.exit();
-}	
+}
 
 /**
  * Resolve a folder or die
  **/
 function resolve( folder ){
 	if( folder.indexOf( '/' ) ){
-		folder = path.join( process.cwd(), folder );	
+		folder = path.join( process.cwd(), folder );
 	}
 
 	if( path.existsSync( folder ) ){
@@ -119,18 +123,20 @@ function resolve( folder ){
  * Scan folder seeking out any video files
  **/
 function scan( folder, recursive ){
-	var files = fs.readdirSync( folder );
+	var files = fs.readdirSync( folder )
+	  , stat;
 
 	for( var i=0, l=files.length; i<l; i++ ){
 		var fPath = path.join( folder, files[i] );
+		stat = fs.statSync( fPath )
 
-		if( fs.statSync( fPath ).isDirectory() ){
+		if( stat.isDirectory() ){
 			if( recursive ){
 				scan( fPath, true );
 			}
 		} else {
 			if( extRx.test( fPath ) ){
-				addFile( fPath );
+				addFile( fPath, stat );
 			}
 		}
 	}
@@ -147,8 +153,10 @@ function scan( folder, recursive ){
 /**
  * Add video file to queue
  **/
-function addFile( path ){
+function addFile( path, stat ){
 	toEncode.push( path );
+	toEncode.sizes.push( stat.size );
+	toEncode.size += stat.size;
 	console.log( 'Found File: '.green + path.green.underline );
 }
 
@@ -173,6 +181,17 @@ function encode(){
  **/
 String.prototype.times = function( n ){
 	return new Array( n+1 ).join( this );
+};
+
+String.prototype.sprintf = function(){
+	var out = this
+	  , i, l;
+
+	for( i=0, l=arguments.length; i<l; i++){
+		out = out.replace( '%s', arguments[i] );
+	}
+
+	return out;
 };
 
 Number.prototype.toPercent = function(){
@@ -207,6 +226,7 @@ function Encoder( fPath ){
 	this.inFile    = fPath.split( /(\/|\\)/ ).pop();
 	this.inFolder  = fPath.replace( /[\/\\][^\/\\]+$/, '' );
 	this.outPath   = path.join( program.outputfolder || this.inFolder, this.inFile.replace( /\.[^\.]+$/, '' ) + '.' + program.outputext );
+	this.size      = fs.statSync( fPath ).size;
 
 	charm.write( 'Encoding: ' + this.inFile + ' ' );
 
@@ -235,7 +255,14 @@ function Encoder( fPath ){
 Encoder.prototype = {
 	drawProgress : function( p ){
 		p || ( p = 0 );
-		var str = '  [' + '#'.times( 0|p/5 ) + ' '.times( 0|(104.99-p)/5 ) + '] ' + p.toPercent() + '  ETA: ' + ( ( Date.now() - this.startTime ) * ( 100 / p - 1 ) ).toTimeString();
+		var P = ( toEncode.encoded + this.size * p ) / toEncode.size; // progress of everything in queue
+		var str = '  [%s %s] %s  ETA: %s    Queue ETA: %s'.sprintf(
+			  '#'.times( 0|p/5 )
+			, ' '.times( 0|( 104.99-p )/5 )
+			, p.toPercent()
+			, ( ( Date.now() - this.startTime ) * ( 100 / p - 1 ) ).toTimeString()
+			, ( ( Date.now() - this.startTime ) * ( 100 / P - 1 ) ).toTimeString()
+		);
 		charm.write( str );
 		this.charmLen = str.length;
 		return this;
@@ -262,6 +289,7 @@ Encoder.prototype = {
 			this.abandon( 'Unknown error encoding ' );
 			// Dunno
 		}
+		this.complete();
 		this.exit();
 	}
 
@@ -272,6 +300,11 @@ Encoder.prototype = {
 
 	, fail : function( msg ){
 		charm.foreground( 'red' ).write( ' ' + chrFail + ' ' + msg ).foreground( 'white' );
+		return this;
+	}
+
+	, complete : function(){
+		toEncode.encoded += this.size;
 		return this;
 	}
 
