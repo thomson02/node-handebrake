@@ -4,6 +4,7 @@ var       fs = require( 'fs' )
   ,     path = require( 'path' )
   ,    child = require( 'child_process' )
   ,    spawn = child.spawn
+  ,   mkdirp = require('mkdirp')
 
   ,  program = require( 'commander' )
   ,    charm = require( 'charm' )( process )
@@ -43,8 +44,9 @@ program
 	.option ( '-x, --extensions   <extensions>', 'Comma-separated list of file extensions to process (default: [long list])')
 	.option ( '-X, --outputext    <ext>'       , 'Extension for generated files (default: m4v)' )
 	.option ( '-O, --outputfolder <folder>'    , 'Folder in which to place completed videos (default: same-as-original)' )
+    .option ( '-s, --recreatestructure'        , 'Recreate input folder structure for output files (default: false)' )
 
-	.parse  ( process.argv );
+    .parse  ( process.argv );
 
 
 /**
@@ -57,7 +59,7 @@ process.nextTick( function(){
 	program.preset    || ( program.preset    = 'Normal'                     );
 	program.handbrake || ( program.handbrake = '/Applications/HandBrakeCLI' );
 
-	if( !path.existsSync( program.handbrake ) ){ die( 'HandBrakeCLI not found' ); }
+	if( !fs.existsSync( program.handbrake ) ){ die( 'HandBrakeCLI not found' ); }
 
 	extRx = new RegExp( '\\.(' +
 		( program.extensions || exts )
@@ -109,7 +111,7 @@ function resolve( folder ){
 		folder = path.join( process.cwd(), folder );
 	}
 
-	if( path.existsSync( folder ) ){
+	if( fs.existsSync( folder ) ){
 		return folder;
 	}else{
 		die( 'Folder does not exist: '.red + folder.red.underline );
@@ -225,7 +227,14 @@ function Encoder( fPath ){
 	this.inPath    = fPath;
 	this.inFile    = fPath.split( /(\/|\\)/ ).pop();
 	this.inFolder  = fPath.replace( /[\/\\][^\/\\]+$/, '' );
-	this.outPath   = path.join( program.outputfolder || this.inFolder, this.inFile.replace( /\.[^\.]+$/, '' ) + '.' + program.outputext );
+
+    var fullOutputFolder = program.outputfolder;
+    if (program.recreatestructure && program.outputfolder){
+        fullOutputFolder = fullOutputFolder + this.inPath.replace(path.resolve(program.args[0]), "").replace(this.inFile, "");
+        mkdirp(fullOutputFolder);
+    }
+
+    this.outPath   = path.join( fullOutputFolder || this.inFolder, this.inFile.replace( /\.[^\.]+$/, '' ) + '.' + program.outputext );
 	this.size      = fs.statSync( fPath ).size;
 
 	charm.write( 'Encoding: ' + this.inFile + ' ' );
@@ -233,7 +242,7 @@ function Encoder( fPath ){
 	if( this.inPath === this.outPath ){
 		return this.abandon( 'Source & Destination are the same' );
 	}
-	if( !program.force && path.existsSync( this.outPath ) ){
+	if( !program.force && fs.existsSync( this.outPath ) ){
 		return this.abandon( 'Destination file already exists' );
 	}
 
@@ -327,12 +336,12 @@ Encoder.prototype = {
 	}
 
 	, removeOutfile : function(){
-		!program.keep && this.started && path.existsSync( this.outPath ) && fs.unlinkSync( this.outPath );
+		!program.keep && this.started && fs.existsSync( this.outPath ) && fs.unlinkSync( this.outPath );
 		return this;
 	}
 
 	, removeInfile : function(){
-		program.delete && path.existsSync( this.inPath ) && fs.unlinkSync( this.inPath );
+		program.delete && fs.existsSync( this.inPath ) && fs.unlinkSync( this.inPath );
 		return this;
 	}
 };
